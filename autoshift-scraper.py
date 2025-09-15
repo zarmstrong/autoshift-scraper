@@ -323,7 +323,7 @@ def generateAutoshiftJSON(website_code_tables, previous_codes, include_expired):
     # Add the metadata section: 
     generatedDateAndTime = datetime.now(timezone.utc)
     metadata = {
-            "version": "0.1",
+            "version": "2",
             "description": "GitHub Alternate Source for Shift Codes",
             "attribution": "Data provided by https://mentalmars.com",
             "permalink": "https://raw.githubusercontent.com/zarmstrong/autoshift-codes/main/shiftcodes.json",
@@ -361,7 +361,7 @@ def run_migrations_on_shiftfile(shiftfile_path, previous_codes):
     # If no version is set at all, initialise to version 1 and persist that
     if 'version' not in meta:
         _L.info("Initial migration: setting shiftcodes file version to 1")
-        previous_codes[0].setdefault('meta', {})['version'] = 1
+        previous_codes[0].setdefault('meta', {})['version'] = "1"
         try:
             with open(shiftfile_path, 'w') as f:
                 json.dump(previous_codes, f, indent=2, default=str)
@@ -370,14 +370,25 @@ def run_migrations_on_shiftfile(shiftfile_path, previous_codes):
             _L.error("Failed to write initial-version shiftcodes file: %s", e)
         meta = previous_codes[0].get('meta', {})
 
-    version = meta.get('version', 1)
+    version = str(meta.get('version', "1"))
+    # Treat "0.1" as equivalent to "1"
+    if version == "0.1":
+        version = "1"
+        previous_codes[0]['meta']['version'] = "1"
+        try:
+            with open(shiftfile_path, 'w') as f:
+                json.dump(previous_codes, f, indent=2, default=str)
+            _L.info("Updated version 0.1 to 1 in %s", shiftfile_path)
+        except Exception as e:
+            _L.error("Failed to update version from 0.1 to 1: %s", e)
+
     # if already >= 2 nothing to do
-    if version >= 2:
+    if version >= "2":
         _L.debug("Shiftcodes file already at version %s, no migrations needed", version)
         return previous_codes
 
     # Migration: v1 -> v2
-    if version == 1:
+    if version == "1":
         _L.info("Running migration: v1 -> v2 on %s", shiftfile_path)
         # Only allow codes that match the 5x5 pattern
         pattern = re.compile(r'^[A-Z0-9]{5}(?:-[A-Z0-9]{5}){4}$')
@@ -397,7 +408,7 @@ def run_migrations_on_shiftfile(shiftfile_path, previous_codes):
 
         removed = before_count - len(filtered)
         previous_codes[0]['codes'] = filtered
-        previous_codes[0].setdefault('meta', {})['version'] = 2
+        previous_codes[0].setdefault('meta', {})['version'] = "2"
 
         # Persist the migrated file back to disk
         try:
