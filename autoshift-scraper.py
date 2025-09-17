@@ -388,18 +388,16 @@ def generateAutoshiftJSON(website_code_tables, previous_codes, include_expired):
 def run_migrations_on_shiftfile(shiftfile_path, previous_codes):
     """Run migrations against the loaded shiftcodes structure.
 
-    Currently implements:
-      - v1 -> v2: remove any codes that don't match the 5x5 groups pattern.
-
-    Returns the (possibly modified) previous_codes structure.
+    Returns the (possibly modified) previous_codes structure and a boolean indicating if a migration was performed.
     """
+    migration_performed = False
     if not previous_codes:
-        return previous_codes
+        return previous_codes, migration_performed
 
     try:
         meta = previous_codes[0].get("meta", {})
     except Exception:
-        return previous_codes
+        return previous_codes, migration_performed
 
     # If no version is set at all, initialise to version 1 and persist that
     if "version" not in meta:
@@ -409,6 +407,7 @@ def run_migrations_on_shiftfile(shiftfile_path, previous_codes):
             with open(shiftfile_path, "w") as f:
                 json.dump(previous_codes, f, indent=2, default=str)
             _L.info("Wrote initial version=1 to %s", shiftfile_path)
+            migration_performed = True
         except Exception as e:
             _L.error("Failed to write initial-version shiftcodes file: %s", e)
         meta = previous_codes[0].get("meta", {})
@@ -422,13 +421,14 @@ def run_migrations_on_shiftfile(shiftfile_path, previous_codes):
             with open(shiftfile_path, "w") as f:
                 json.dump(previous_codes, f, indent=2, default=str)
             _L.info("Updated version 0.1 to 1 in %s", shiftfile_path)
+            migration_performed = True
         except Exception as e:
             _L.error("Failed to update version from 0.1 to 1: %s", e)
 
     # if already >= 2 nothing to do
     if version >= "2":
         _L.debug("Shiftcodes file already at version %s, no migrations needed", version)
-        return previous_codes
+        return previous_codes, migration_performed
 
     # Migration: v1 -> v2
     if version == "1":
@@ -461,10 +461,11 @@ def run_migrations_on_shiftfile(shiftfile_path, previous_codes):
                 "Migration complete: removed %d invalid codes, set version to 2",
                 removed,
             )
+            migration_performed = True
         except Exception as e:
             _L.error("Failed to write migrated shiftcodes file: %s", e)
 
-    return previous_codes
+    return previous_codes, migration_performed
 
 
 def setup_argparser():
@@ -519,7 +520,9 @@ def main(args):
             previous_codes = None
             pass
     # Run any migrations on the previous codes file to bring it up to date
-    previous_codes = run_migrations_on_shiftfile(SHIFTCODESJSONPATH, previous_codes)
+    previous_codes, migration_performed = run_migrations_on_shiftfile(
+        SHIFTCODESJSONPATH, previous_codes
+    )
 
     # Scrape the source webpage into a normalised Dictionary
     for webpage in webpages:
@@ -545,8 +548,11 @@ def main(args):
 
     # Commit the new file to GitHub publically if the args are set:
     if args.user and args.repo and args.token:
-        # Only commit if there are new codes
-        if codes_inc_expired[0].get("meta").get("newcodecount") > 0:
+        # Only commit if there are new codes or if a migration was performed
+        if (
+            codes_inc_expired[0].get("meta").get("newcodecount") > 0
+            or migration_performed
+        ):
             _L.info("Connecting to GitHub repo: " + args.user + "/" + args.repo)
             # Connect to GitHub
             file_path = SHIFTCODESJSONPATH
@@ -563,16 +569,23 @@ def main(args):
             contents = repo.get_contents(
                 "shiftcodes.json", ref="main"
             )  # Retrieve old file to get its SHA and path
+            commit_msg = (
+                "added new codes"
+                if codes_inc_expired[0].get("meta").get("newcodecount") > 0
+                else "migrated shiftcodes file"
+            )
             commit_return = repo.update_file(
                 contents.path,
-                "added new codes",
+                commit_msg,
                 file_to_commit,
                 contents.sha,
                 branch="main",
             )  # Add, commit and push branch
             _L.info("GitHub result: " + str(commit_return))
         else:
-            _L.info("Not committing to GitHub as there are no new codes.")
+            _L.info(
+                "Not committing to GitHub as there are no new codes and no migration."
+            )
 
 
 if __name__ == "__main__":
