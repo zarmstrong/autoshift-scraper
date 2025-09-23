@@ -482,13 +482,20 @@ def setup_argparser():
     # TODO add github repo and key here to publish to...
     parser.add_argument(
         "--schedule",
-        type=float,
-        const=2,
+        type=str,
+        const="2",
         nargs="?",
-        help="Keep checking for keys and redeeming every hour",
+        help="Schedule interval. Append 'm' for minutes (e.g. '30m') otherwise treated as hours (e.g. '2' or '1.5').",
     )
     parser.add_argument(
         "-v", "--verbose", dest="verbose", action="store_true", help="Verbose mode"
+    )
+    # secret flag to allow official scraper to override the 2-hour minimum
+    parser.add_argument(
+        "--officialscraper",
+        dest="officialscraper",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "-u",
@@ -511,49 +518,244 @@ def setup_argparser():
 def scrape_polygon_bl4_codes(existing_codes_set):
     url = "https://www.polygon.com/borderlands-4-active-shift-codes-redeem/"
     try:
-        _L.info(f"Requesting Polygon BL4 codes: {url}")
-        r = requests.get(url, timeout=15)
+        _L.info("Requesting Polygon BL4 codes: " + url)
+        # add a simple user-agent to reduce chance of being blocked
+        r = requests.get(
+            url, timeout=15, headers={"User-Agent": "autoshift-scraper/1.0"}
+        )
         r.raise_for_status()
         soup = BeautifulSoup(r.content, "html.parser")
-        h2 = soup.find("h2", id="all-borderlands-4-shift-codes")
-        if not h2:
-            _L.warning(
-                "Polygon BL4: Could not find h2 with id 'all-borderlands-4-shift-codes'"
-            )
-            return []
-        ul = h2.find_next("ul")
-        if not ul:
-            _L.warning("Polygon BL4: Could not find <ul> after the h2")
-            return []
+
+        # 1) Try the exact id-based approach first (legacy)
+        header = soup.find(
+            lambda tag: tag.name in ["h1", "h2", "h3", "h4"]
+            and tag.get("id") == "all-borderlands-4-shift-codes"
+        )
+
+        # 2) If not found, try to find a header whose text mentions Borderlands 4 and shift/shift codes
+        if not header:
+            for tag in soup.find_all(["h1", "h2", "h3", "h4"]):
+                txt = tag.get_text(" ", strip=True).lower()
+                if "borderlands 4" in txt and "shift" in txt:
+                    header = tag
+                    break
+
         codes = []
-        for li in ul.find_all("li"):
-            text = li.get_text(strip=True)
-            # Match: CODE (Reward) — added ...
-            m = re.match(r"([A-Z0-9\-]{29,})\s*\(([^)]+)\)", text)
-            if not m:
-                _L.debug(f"Polygon BL4: Could not parse li: {text}")
-                continue
-            code = m.group(1).strip().upper()
-            reward = m.group(2).strip()
-            # Validate code format
-            if not re.fullmatch(r"[A-Z0-9]{5}(?:-[A-Z0-9]{5}){4}", code):
-                _L.debug(f"Polygon BL4: Skipping invalid code format: {code}")
-                continue
-            if code in existing_codes_set:
-                _L.debug(f"Polygon BL4: Skipping duplicate code: {code}")
-                continue
-            codes.append(
-                {
-                    "code": code,
-                    "reward": reward,
-                    "expires": "Unknown",
-                    "expired": False,
-                }
+        parsed_total = 0
+        duplicates_existing = 0
+        duplicates_inpage = 0
+
+        # Helper to parse LI text for a code + reward
+        def parse_li_text(text):
+            # find a 5x5 code anywhere in the text
+            code_match = re.search(r"([A-Za-z0-9]{5}(?:-[A-Za-z0-9]{5}){4})", text)
+            if not code_match:
+                return None
+            code = code_match.group(1).upper()
+            # reward is often in parentheses — if present, grab it
+            reward_match = re.search(r"\(([^)]+)\)", text)
+            reward = reward_match.group(1).strip() if reward_match else "Unknown"
+            return {
+                "code": code,
+                "reward": reward,
+                "expires": "Unknown",
+                "expired": False,
+            }
+
+        # If we found a header, try to parse the immediate list after it
+        if header:
+            ul = header.find_next(["ul", "ol"])
+            if ul:
+                _L.debug("Polygon BL4: scanning list after detected header")
+                for li in ul.find_all("li"):
+                    text = li.get_text(" ", strip=True)
+                    parsed = parse_li_text(text)
+                    if not parsed:
+                        _L.debug("Polygon BL4: could not parse li: %s", text)
+                        continue
+                    parsed_total += 1
+                    if parsed["code"] in existing_codes_set:
+                        duplicates_existing += 1
+                        _L.debug(
+                            "Polygon BL4: Skipping duplicate code (already present): %s",
+                            parsed["code"],
+                        )
+                        continue
+                    if any(c["code"] == parsed["code"] for c in codes):
+                        duplicates_inpage += 1
+                        _L.debug(
+                            "Polygon BL4: Skipping duplicate code (in-page): %s",
+                            parsed["code"],
+                        )
+                        continue
+                    codes.append(parsed)
+            else:
+                _L.debug("Polygon BL4: header found but no following list element")
+
+        # Fallback: scan all lists on the page if nothing matched so far
+        if not codes:
+            _L.debug(
+                "Polygon BL4: header-based parse yielded no codes, scanning all lists as fallback"
             )
+            for ul in soup.find_all(["ul", "ol"]):
+                for li in ul.find_all("li"):
+                    text = li.get_text(" ", strip=True)
+                    parsed = parse_li_text(text)
+                    if not parsed:
+                        continue
+                    parsed_total += 1
+                    if parsed["code"] in existing_codes_set:
+                        duplicates_existing += 1
+                        continue
+                    if any(c["code"] == parsed["code"] for c in codes):
+                        duplicates_inpage += 1
+                        continue
+                    codes.append(parsed)
+
+        new_count = len(codes)
+        # Report new codes and duplicate counts as standard info output
+        _L.info(
+            "Polygon BL4: Found %d new candidate codes (parsed %d candidates, %d duplicates already present, %d duplicates in-page)",
+            new_count,
+            parsed_total,
+            duplicates_existing,
+            duplicates_inpage,
+        )
         return codes
     except Exception as e:
         _L.error(f"Polygon BL4: Error scraping codes: {e}")
         return []
+
+
+def scrape_ign_bl4_codes(existing_codes_set):
+    """
+    Parse IGN wiki for Borderlands 4 SHiFT codes.
+    Strategy:
+      - fetch page, scan all tables (rows) and list items for any 5x5 code pattern
+      - extract reward from parentheses if present, detect 'expired' if strikethrough or text contains 'expired'
+      - return list of dicts matching other parsers: {code,reward,expires,expired}
+      - log counts: parsed candidates, duplicates already present, in-page duplicates, new found
+    """
+    url = "https://www.ign.com/wikis/borderlands-4/Borderlands_4_SHiFT_Codes"
+    # always log intent to request before doing the network call so the entry appears in logs
+    _L.info("Requesting IGN BL4 codes: " + url)
+    try:
+        r = requests.get(
+            url, timeout=15, headers={"User-Agent": "autoshift-scraper/1.0"}
+        )
+        r.raise_for_status()
+        soup = BeautifulSoup(r.content, "html.parser")
+
+        code_re = re.compile(r"([A-Za-z0-9]{5}(?:-[A-Za-z0-9]{5}){4})")
+        codes = []
+        parsed_total = 0
+        duplicates_existing = 0
+        duplicates_inpage = 0
+
+        def extract_from_text(text, row_tag=None):
+            m = code_re.search(text)
+            if not m:
+                return None
+            code = m.group(1).upper()
+            # reward in parentheses if present
+            rm = re.search(r"\(([^)]+)\)", text)
+            reward = rm.group(1).strip() if rm else "Unknown"
+            # detect expired via explicit word or <s> in the provided tag if available
+            expired = False
+            if row_tag is not None:
+                if row_tag.find("s") is not None:
+                    expired = True
+            if "expired" in text.lower():
+                expired = True
+            return {
+                "code": code,
+                "reward": reward,
+                "expires": "Unknown",
+                "expired": expired,
+            }
+
+        # 1) Scan all tables' rows
+        for table in soup.find_all("table"):
+            tbody = table.find("tbody") or table
+            for tr in tbody.find_all("tr"):
+                row_text = tr.get_text(" ", strip=True)
+                parsed_total += 1
+                parsed = extract_from_text(row_text, tr)
+                if not parsed:
+                    continue
+                if parsed["code"] in existing_codes_set:
+                    duplicates_existing += 1
+                    continue
+                if any(c["code"] == parsed["code"] for c in codes):
+                    duplicates_inpage += 1
+                    continue
+                codes.append(parsed)
+
+        # 2) Fallback: scan list items across the page
+        for ul in soup.find_all(["ul", "ol"]):
+            for li in ul.find_all("li"):
+                li_text = li.get_text(" ", strip=True)
+                parsed_total += 1
+                parsed = extract_from_text(li_text, li)
+                if not parsed:
+                    continue
+                if parsed["code"] in existing_codes_set:
+                    duplicates_existing += 1
+                    continue
+                if any(c["code"] == parsed["code"] for c in codes):
+                    duplicates_inpage += 1
+                    continue
+                codes.append(parsed)
+
+        new_count = len(codes)
+        _L.info(
+            "IGN BL4: Found %d new candidate codes (parsed %d candidates, %d duplicates already present, %d duplicates in-page)",
+            new_count,
+            parsed_total,
+            duplicates_existing,
+            duplicates_inpage,
+        )
+        return codes
+    except Exception as e:
+        _L.error(f"IGN BL4: Error scraping codes: {e}")
+        return []
+
+
+# small helper to interpret schedule strings
+def parse_schedule_arg(schedule_str):
+    """
+    Returns tuple (mode, value) where mode is 'minutes' or 'hours'.
+    Accepts:
+      - "30m" / "30M" => ('minutes', 30)
+      - "2" / "1.5" / "2.0" => ('hours', 2.0)
+    Returns None on invalid input.
+    """
+    if schedule_str is None:
+        return None
+    s = str(schedule_str).strip()
+    if s.lower().endswith("m"):
+        num = s[:-1].strip()
+        try:
+            minutes = int(float(num))
+            if minutes <= 0:
+                return None
+            # enforce minimum 15 minutes
+            if minutes < 15:
+                _L.warning(
+                    "Schedule value too short (%dm). Enforcing minimum of 15m.", minutes
+                )
+                minutes = 15
+            return ("minutes", minutes)
+        except Exception:
+            return None
+    else:
+        try:
+            hours = float(s)
+            if hours <= 0:
+                return None
+            return ("hours", hours)
+        except Exception:
+            return None
 
 
 def main(args):
@@ -608,6 +810,33 @@ def main(args):
                     code_table["codes"].extend(polygon_bl4_codes)
                     _L.info(
                         f"Polygon BL4: Added {len(polygon_bl4_codes)} codes to Borderlands 4 universal"
+                    )
+                    break
+
+        # Re-generate the output JSONs with the new codes included
+        codes_inc_expired = generateAutoshiftJSON(code_tables, previous_codes, True)
+        codes_excl_expired = generateAutoshiftJSON(code_tables, previous_codes, False)
+
+    # --- IGN BL4 scraper: run after Polygon (rebuild existing set from latest data) ---
+    existing_codes_set = set()
+    for code_entry in codes_inc_expired[0].get("codes", []):
+        code_val = code_entry.get("code")
+        if code_val:
+            existing_codes_set.add(code_val.upper())
+
+    # log the invocation from main so it's visible in the main flow
+    _L.info("Invoking IGN BL4 parser")
+    ign_bl4_codes = scrape_ign_bl4_codes(existing_codes_set)
+    if ign_bl4_codes:
+        for code_table_list in code_tables:
+            for code_table in code_table_list:
+                if (
+                    code_table.get("game") == "Borderlands 4"
+                    and code_table.get("platform") == "universal"
+                ):
+                    code_table["codes"].extend(ign_bl4_codes)
+                    _L.info(
+                        f"IGN BL4: Added {len(ign_bl4_codes)} codes to Borderlands 4 universal"
                     )
                     break
 
@@ -685,27 +914,47 @@ if __name__ == "__main__":
     # execute the main function at least once (and only once if scheduler is not set)
     main(args)
 
-    if args.schedule and args.schedule < 2:
-        _L.warning(
-            f"Running this tool every {args.schedule} hours would result in "
-            "too many requests.\n"
-            "Scheduling changed to run every 2 hours!"
-        )
-
-    # scheduling will start after first trigger (so in an hour..)
-    if args.schedule:
-        hours = int(args.schedule)
-        minutes = int((args.schedule - hours) * 60 + 1e-5)
-        _L.info(f"Scheduling to run every {hours:02}:{minutes:02} hours")
+    # scheduling: accept minutes when user supplies e.g. "30m", otherwise treat as hours
+    sched = parse_schedule_arg(args.schedule)
+    if sched:
+        mode, val = sched
         from apscheduler.schedulers.blocking import BlockingScheduler
 
         scheduler = BlockingScheduler()
-        scheduler.add_job(main, "interval", args=(args,), hours=args.schedule)
-        print(f"Press Ctrl+{'Break' if os.name == 'nt' else 'C'} to exit")
+        if mode == "hours":
+            hours = float(val)
+            if hours < 2:
+                if getattr(args, "officialscraper", False):
+                    _L.info(
+                        "Official scraper override enabled; scheduling every %.2f hours",
+                        hours,
+                    )
+                else:
+                    _L.warning(
+                        f"Running this tool every {hours} hours would result in too many requests.\n"
+                        "Scheduling changed to run every 2 hours!"
+                    )
+                    hours = 2.0
+            # robust: convert total hours to total minutes (rounded) then split
+            total_minutes = int(round(hours * 60))
+            h, m = divmod(total_minutes, 60)
+            _L.info(f"Scheduling to run every {h:02}:{m:02} hours")
+            scheduler.add_job(main, "interval", args=(args,), hours=hours)
+        else:  # minutes
+            minutes = int(val)
+            hh = minutes // 60
+            mm = minutes % 60
+            _L.info(f"Scheduling to run every {hh:02}:{mm:02} (hh:mm)")
+            scheduler.add_job(main, "interval", args=(args,), minutes=minutes)
 
+        print(f"Press Ctrl+{'Break' if os.name == 'nt' else 'C'} to exit")
         try:
             scheduler.start()
         except (KeyboardInterrupt, SystemExit):
             pass
+    else:
+        # invalid or no schedule specified -> no scheduler started
+        if args.schedule:
+            _L.error("Invalid schedule argument provided: %s", args.schedule)
 
     _L.info("Goodbye.")
