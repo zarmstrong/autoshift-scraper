@@ -94,7 +94,10 @@ def remap_dict_keys(dict_keys):
         if key is None:
             continue
         k = key.strip().lower()
-        if "shift code" in k or "shift" in k and "code" in k:
+        # handle "expired" specifically before the more generic "expire" check
+        if "expired" in k:
+            new_key = "expired"
+        elif "shift code" in k or ("shift" in k and "code" in k):
             new_key = "code"
         elif "expire" in k:
             new_key = "expires"
@@ -127,7 +130,11 @@ def cleanse_codes(codes):
 
         # Mark expired as expired
         if "expired" in clean_code:
-            clean_code.update({"expired": True})
+            val = clean_code.get("expired")
+            # treat any value that is not exactly False, "false", "no", "0", or "" (case-insensitive) as True
+            clean_code.update(
+                {"expired": str(val).strip().lower() not in ["false", "no", "0", ""]}
+            )
         else:
             clean_code.update({"expired": False})
 
@@ -171,7 +178,7 @@ def scrape_codes(webpage):
     for figure in figures:
         # Prevent IndexError if there are more figures than expected
         if table_count >= len(webpage.get("platform_ordered_tables")):
-            _L.warn(
+            _L.warning(
                 f"More tables found ({len(figures)}) than expected ({len(webpage.get('platform_ordered_tables'))}) for {webpage.get('game')}. Skipping extra tables."
             )
             break
@@ -501,6 +508,54 @@ def setup_argparser():
     return parser
 
 
+def scrape_polygon_bl4_codes(existing_codes_set):
+    url = "https://www.polygon.com/borderlands-4-active-shift-codes-redeem/"
+    try:
+        _L.info(f"Requesting Polygon BL4 codes: {url}")
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.content, "html.parser")
+        h2 = soup.find("h2", id="all-borderlands-4-shift-codes")
+        if not h2:
+            _L.warning(
+                "Polygon BL4: Could not find h2 with id 'all-borderlands-4-shift-codes'"
+            )
+            return []
+        ul = h2.find_next("ul")
+        if not ul:
+            _L.warning("Polygon BL4: Could not find <ul> after the h2")
+            return []
+        codes = []
+        for li in ul.find_all("li"):
+            text = li.get_text(strip=True)
+            # Match: CODE (Reward) — added ...
+            m = re.match(r"([A-Z0-9\-]{29,})\s*\(([^)]+)\)", text)
+            if not m:
+                _L.debug(f"Polygon BL4: Could not parse li: {text}")
+                continue
+            code = m.group(1).strip().upper()
+            reward = m.group(2).strip()
+            # Validate code format
+            if not re.fullmatch(r"[A-Z0-9]{5}(?:-[A-Z0-9]{5}){4}", code):
+                _L.debug(f"Polygon BL4: Skipping invalid code format: {code}")
+                continue
+            if code in existing_codes_set:
+                _L.debug(f"Polygon BL4: Skipping duplicate code: {code}")
+                continue
+            codes.append(
+                {
+                    "code": code,
+                    "reward": reward,
+                    "expires": "Unknown",
+                    "expired": False,
+                }
+            )
+        return codes
+    except Exception as e:
+        _L.error(f"Polygon BL4: Error scraping codes: {e}")
+        return []
+
+
 def main(args):
 
     # Setup json output folder
@@ -528,13 +583,39 @@ def main(args):
     for webpage in webpages:
         code_tables.append(scrape_codes(webpage))
 
-        # print(codes)
-
-    _L.info("Scraping Complete. Now writing out shiftcodes.json file")
-
     # Convert the normalised Dictionary into the denormalised autoshift structure
     codes_inc_expired = generateAutoshiftJSON(code_tables, previous_codes, True)
     codes_excl_expired = generateAutoshiftJSON(code_tables, previous_codes, False)
+
+    # --- Polygon BL4 scraper: run after all other parsers ---
+    # Build a set of all codes already present (case-insensitive)
+    existing_codes_set = set()
+    for code_entry in codes_inc_expired[0].get("codes", []):
+        code_val = code_entry.get("code")
+        if code_val:
+            existing_codes_set.add(code_val.upper())
+
+    polygon_bl4_codes = scrape_polygon_bl4_codes(existing_codes_set)
+    if polygon_bl4_codes:
+        # Find the Borderlands 4 universal code_table in code_tables
+        for code_table_list in code_tables:
+            for code_table in code_table_list:
+                if (
+                    code_table.get("game") == "Borderlands 4"
+                    and code_table.get("platform") == "universal"
+                ):
+                    # Add new codes to this table
+                    code_table["codes"].extend(polygon_bl4_codes)
+                    _L.info(
+                        f"Polygon BL4: Added {len(polygon_bl4_codes)} codes to Borderlands 4 universal"
+                    )
+                    break
+
+        # Re-generate the output JSONs with the new codes included
+        codes_inc_expired = generateAutoshiftJSON(code_tables, previous_codes, True)
+        codes_excl_expired = generateAutoshiftJSON(code_tables, previous_codes, False)
+
+    _L.info("Scraping Complete. Now writing out shiftcodes.json file")
 
     _L.info(
         "Found "
@@ -605,7 +686,7 @@ if __name__ == "__main__":
     main(args)
 
     if args.schedule and args.schedule < 2:
-        _L.warn(
+        _L.warning(
             f"Running this tool every {args.schedule} hours would result in "
             "too many requests.\n"
             "Scheduling changed to run every 2 hours!"

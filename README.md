@@ -1,5 +1,3 @@
-
-
 # Overview
 Script aimed at scraping SHiFT Codes from websites, currently all provided from the great work done at  https://mentalmars.com.  Current webpages scraped include: 
 - [Borderlands](https://mentalmars.com/game-news/borderlands-golden-keys/)
@@ -33,13 +31,13 @@ TODO List:
 ## Command Line Use
 ``` bash
 # If only generating locally
-python ./autoshift-scraper.py 
+python ./autoshift_scraper.py 
 
 # If pushing to GitHub:
-python ./autoshift-scraper.py --user GITHUB_USERNAME --repo GITHUB_REPOSITORY_NAME --token GITHUB_AUTHTOKEN
+python ./autoshift_scraper.py --user GITHUB_USERNAME --repo GITHUB_REPOSITORY_NAME --token GITHUB_AUTHTOKEN
 
 # If scheduling: 
-python ./autoshift-scraper.py --schedule 5 # redeem every 5 hours
+python ./autoshift_scraper.py --schedule 5 # redeem every 5 hours
 ```
 
 ## Docker Use
@@ -221,3 +219,32 @@ docker push docker.io/ugoogalizer/autoshift-scraper:latest
 docker push docker.io/ugoogalizer/autoshift-scraper:${VERSIONTAG}
 
 ```
+
+# Testing
+
+Unit tests are provided for the main parser logic, including the MentalMars and Polygon Borderlands 4 scrapers.
+
+## Running the tests
+
+1. Install test dependencies (pytest):
+   ```bash
+   pip install pytest
+   ```
+
+2. Run all tests from the project root:
+   ```bash
+   pytest
+   ```
+
+3. To run a specific test file:
+   ```bash
+   pytest tests/test_parsers.py
+   ```
+
+## What is tested
+
+- Extraction and normalization of codes from sample HTML for both MentalMars and Polygon BL4 sources.
+- Handling of invalid or duplicate codes.
+- Error handling for missing or malformed HTML.
+
+Test files are located in the `tests/` directory.
