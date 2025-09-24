@@ -20,6 +20,27 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Ensure data/shiftcodes.json is present for scraper
+        run: |
+          # create data dir the scraper expects
+          mkdir -p data
+          # prefer the file checked out in the repo root (if present)
+          if [ -f shiftcodes.json ]; then
+            cp shiftcodes.json data/shiftcodes.json
+            echo "Copied existing shiftcodes.json from repo root to data/shiftcodes.json"
+          else
+            # attempt to download the file from the repo's main branch raw URL
+            RAW_URL="https://raw.githubusercontent.com/${{ github.repository }}/main/shiftcodes.json"
+            echo "shiftcodes.json not present in checkout; attempting to download from $RAW_URL"
+            if curl -fsSL "$RAW_URL" -o data/shiftcodes.json; then
+              echo "Downloaded shiftcodes.json to data/shiftcodes.json"
+            else
+              # fallback to an empty valid structure to avoid parser errors
+              echo "[] " > data/shiftcodes.json
+              echo "Failed to download shiftcodes.json; wrote empty array to data/shiftcodes.json"
+            fi
+          fi
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
