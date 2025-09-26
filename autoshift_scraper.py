@@ -259,6 +259,16 @@ def getPreviousCodeArchived(new_code, new_game, previous_codes):
     return None
 
 
+# Retrieve the previous full code entry (if any) so we can preserve fields like "expired"
+def getPreviousCodeEntry(new_code, new_game, previous_codes):
+    for previous_code in previous_codes[0].get("codes", []):
+        if (new_code.get("code") == previous_code.get("code")) and (
+            new_game == previous_code.get("game")
+        ):
+            return previous_code
+    return None
+
+
 # Restructure the normalised dictionary to the denormalised structure autoshift expects
 def generateAutoshiftJSON(website_code_tables, previous_codes, include_expired):
     autoshiftcodes = []
@@ -296,6 +306,18 @@ def generateAutoshiftJSON(website_code_tables, previous_codes, include_expired):
                 archived = getPreviousCodeArchived(
                     code, code_table.get("game"), previous_codes
                 )
+                # Preserve previously-detected expired state when the new scraped row lacks a real expiry.
+                prev_entry = getPreviousCodeEntry(
+                    code, code_table.get("game"), previous_codes
+                )
+                # If previous entry explicitly marked expired, and new row has unknown/empty expires,
+                # keep expired=True instead of reverting to False.
+                if prev_entry and prev_entry.get("expired"):
+                    new_expires = (code.get("expires") or "").strip()
+                    if new_expires.lower() in ["", "unknown", "unknown"]:
+                        code["expired"] = True
+                # end preserve logic
+
                 if archived == None:
                     # New code
                     archived = code_table.get("archived")

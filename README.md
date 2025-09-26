@@ -248,3 +248,26 @@ Unit tests are provided for the main parser logic, including the MentalMars and 
 - Error handling for missing or malformed HTML.
 
 Test files are located in the `tests/` directory.
+
+## Mark codes as expired (local helper)
+
+A small helper script is included to mark one or more codes as expired in data/shiftcodes.json:
+
+Usage:
+```bash
+# mark a single code (sets expires to now UTC)
+python mark_expired.py BHRBJ-ZWHT3-W6JBK-BT3BB-CW3ZK
+
+# mark multiple codes
+python mark_expired.py CODE1 CODE2 CODE3
+
+# set explicit expires timestamp (ISO)
+python mark_expired.py CODE1 --expires "2025-09-26T04:19:00+00:00"
+```
+
+Upload updated file to GitHub:
+- To have the script push the updated shiftcodes.json back to the repository, provide GitHub credentials when running:
+```bash
+python mark_expired.py CODE1 --user your-gh-username --repo your-repo-name --token your_fine_grained_token
+```
+The script will attempt to update `shiftcodes.json` on the `main` branch (it will create the file if missing).
