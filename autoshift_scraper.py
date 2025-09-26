@@ -721,6 +721,150 @@ def scrape_ign_bl4_codes(existing_codes_set):
         return []
 
 
+def scrape_xsmash_codes(existing_codes_set):
+    """
+    Parse xsmashx88x Shift-Codes gh-pages index.html for SHiFT codes by extracting the
+    ALL_CODES_CONFIG JavaScript array. Returns list of dicts: {code, reward, expires, expired}.
+    """
+    url = "https://raw.githubusercontent.com/xsmashx88x/Shift-Codes/refs/heads/gh-pages/index.html"
+    try:
+        _L.info("Requesting xsmashx88x Shift-Codes page: " + url)
+        r = requests.get(
+            url, timeout=15, headers={"User-Agent": "autoshift-scraper/1.0"}
+        )
+        r.raise_for_status()
+        text = r.text
+
+        # Find the ALL_CODES_CONFIG array block
+        m = re.search(
+            r"ALL_CODES_CONFIG\s*=\s*\[(.*?)\]\s*;", text, re.DOTALL | re.IGNORECASE
+        )
+        if not m:
+            _L.debug("xsmash: ALL_CODES_CONFIG not found in page")
+            return []
+
+        array_body = m.group(1)
+
+        # Split into individual JS object blocks by finding balanced braces roughly.
+        # Simpler approach: find all occurrences of "code:" within the array and parse nearby fields.
+        entry_re = re.compile(
+            r"""
+            \{
+            (?:(?:(?!\{).)*?)?                # non-greedy consume until fields
+            code\s*:\s*['"](?P<code>[A-Za-z0-9\-]+)['"]\s*,  # code field
+            (?:(?:(?!\{).)*?)?
+            (?:expires\s*:\s*createDate\((?P<expires>[^)]*)\))?  # optional expires createDate(...)
+            (?:(?:(?!\{).)*?)
+            (?:title\s*:\s*(?P<title>(?:'[^']*'|"[^"]*")))?
+            """,
+            re.DOTALL | re.VERBOSE | re.IGNORECASE,
+        )
+
+        candidates = []
+        parsed_total = 0
+        duplicates_existing = 0
+        duplicates_inpage = 0
+
+        for em in entry_re.finditer(array_body):
+            parsed_total += 1
+            code = em.group("code")
+            if not code:
+                continue
+            code = code.strip().upper()
+
+            # skip if already present
+            if code in existing_codes_set:
+                duplicates_existing += 1
+                continue
+            if any(c["code"] == code for c in candidates):
+                duplicates_inpage += 1
+                continue
+
+            # extract and clean title -> reward text
+            raw_title = em.group("title")
+            reward = "Unknown"
+            if raw_title:
+                # strip surrounding quotes
+                raw_title = raw_title.strip()
+                if (raw_title.startswith("'") and raw_title.endswith("'")) or (
+                    raw_title.startswith('"') and raw_title.endswith('"')
+                ):
+                    raw_title = raw_title[1:-1]
+                # remove HTML tags (use BeautifulSoup)
+                try:
+                    reward = BeautifulSoup(raw_title, "html.parser").get_text(
+                        " ", strip=True
+                    )
+                    # sometimes title has leading "1 : Gold Key - ..." — try to extract reward portion
+                    # split off leading numeric index and colon
+                    parts = reward.split(":", 1)
+                    if len(parts) == 2:
+                        after = parts[1].strip()
+                        # take text up to first " - " or "|" as reward
+                        reward = re.split(r"\s[-|]\s", after)[0].strip() or reward
+                except Exception:
+                    reward = raw_title
+
+            # parse expires createDate args if present
+            expires_raw = em.group("expires")
+            expires_str = "Unknown"
+            expired_flag = False
+            if expires_raw:
+                # split numbers (allow spaces)
+                nums = [
+                    n.strip() for n in re.split(r"\s*,\s*", expires_raw) if n.strip()
+                ]
+                try:
+                    # map to ints where possible
+                    nums_int = [int(float(n)) for n in nums[:6]]  # year,month,day,h,m,s
+                    # JS months may be 0-indexed in some docs — we assume given month is 1-based unless obviously out of range
+                    year = nums_int[0]
+                    month = nums_int[1] if len(nums_int) > 1 else 1
+                    day = nums_int[2] if len(nums_int) > 2 else 1
+                    hour = nums_int[3] if len(nums_int) > 3 else 0
+                    minute = nums_int[4] if len(nums_int) > 4 else 0
+                    second = nums_int[5] if len(nums_int) > 5 else 0
+                    # sanity: clamp month to 1..12; if month==0 assume 0-indexed and add 1
+                    if month == 0:
+                        month = 1
+                    if month > 12:
+                        # if >12, treat as 0-indexed (unlikely) by adding 1 then wrapping, but safest is cap
+                        month = max(1, min(12, month))
+                    try:
+                        dt = datetime(
+                            year, month, day, hour, minute, second, tzinfo=timezone.utc
+                        )
+                        expires_str = dt.isoformat()
+                        # set expired flag if now > dt
+                        expired_flag = datetime.now(timezone.utc) > dt
+                    except Exception:
+                        expires_str = expires_raw.strip()
+                except Exception:
+                    expires_str = expires_raw.strip()
+
+            candidates.append(
+                {
+                    "code": code,
+                    "reward": reward,
+                    "expires": expires_str,
+                    "expired": expired_flag,
+                }
+            )
+
+        new_count = len(candidates)
+        _L.info(
+            "xsmash: Found %d new candidate codes (parsed %d candidates, %d duplicates already present, %d duplicates in-page)",
+            new_count,
+            parsed_total,
+            duplicates_existing,
+            duplicates_inpage,
+        )
+        return candidates
+    except Exception as e:
+        _L.error(f"xsmash parser: Error scraping codes: {e}")
+        return []
+
+
 # small helper to interpret schedule strings
 def parse_schedule_arg(schedule_str):
     """
@@ -837,6 +981,31 @@ def main(args):
                     code_table["codes"].extend(ign_bl4_codes)
                     _L.info(
                         f"IGN BL4: Added {len(ign_bl4_codes)} codes to Borderlands 4 universal"
+                    )
+                    break
+
+        # Re-generate the output JSONs with the new codes included
+        codes_inc_expired = generateAutoshiftJSON(code_tables, previous_codes, True)
+        codes_excl_expired = generateAutoshiftJSON(code_tables, previous_codes, False)
+
+    # --- xsmashx88x GH-Pages scraper: run after IGN (rebuild existing set from latest data) ---
+    existing_codes_set = set()
+    for code_entry in codes_inc_expired[0].get("codes", []):
+        code_val = code_entry.get("code")
+        if code_val:
+            existing_codes_set.add(code_val.upper())
+
+    xsmash_codes = scrape_xsmash_codes(existing_codes_set)
+    if xsmash_codes:
+        for code_table_list in code_tables:
+            for code_table in code_table_list:
+                if (
+                    code_table.get("game") == "Borderlands 4"
+                    and code_table.get("platform") == "universal"
+                ):
+                    code_table["codes"].extend(xsmash_codes)
+                    _L.info(
+                        f"xsmash: Added {len(xsmash_codes)} codes to Borderlands 4 universal"
                     )
                     break
 
