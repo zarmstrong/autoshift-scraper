@@ -247,21 +247,31 @@ def scrape_codes(webpage):
 
 # Check to see if the new code existed in previous codes, and if so return the previous code's archive date.
 def getPreviousCodeArchived(new_code, new_game, previous_codes):
-    # Stupidly inefficient, but enough to keep previous dates
-    if previous_codes:
-        for previous_code in previous_codes[0].get("codes"):
-            #  print("COMPARING: " + new_code.get("code") + " with " + previous_code.get("code"))
+    # WHY: On a fresh run, data/shiftcodes.json can be empty/invalid so the loader returns None.
+    # Guard against None/wrong shape so we don't index previous_codes[0] on a non-list.
+    # WHY: Be strict about the expected shape so we don't index previous_codes[0] on something weird (e.g., {}, [None], etc.).
+    if isinstance(previous_codes, list) and previous_codes and isinstance(previous_codes[0], dict):
+        # Also guard the "codes" key; default to [] so iteration is safe.
+        for previous_code in previous_codes[0].get("codes", []):
             if (new_code.get("code") == previous_code.get("code")) and (
                 new_game == previous_code.get("game")
             ):
                 _L.debug(" Code already existed, reverting archived datestamp")
                 return previous_code.get("archived")
     return None
-
+    
 
 # Retrieve the previous full code entry (if any) so we can preserve fields like "expired"
 def getPreviousCodeEntry(new_code, new_game, previous_codes):
-    for previous_code in previous_codes[0].get("codes", []):
+    # WHY: On first/empty runs, previous_codes can be None or the wrong shape.
+    # Guard so we don't index previous_codes[0] on a non-list.
+    if not isinstance(previous_codes, list) or not previous_codes:
+        return None
+    container = previous_codes[0]
+    if not isinstance(container, dict):
+        return None
+    # Safe default: .get("codes", []) avoids KeyError / None iteration
+    for previous_code in container.get("codes", []):
         if (new_code.get("code") == previous_code.get("code")) and (
             new_game == previous_code.get("game")
         ):
@@ -272,6 +282,9 @@ def getPreviousCodeEntry(new_code, new_game, previous_codes):
 # Restructure the normalised dictionary to the denormalised structure autoshift expects
 def generateAutoshiftJSON(website_code_tables, previous_codes, include_expired):
     autoshiftcodes = []
+    # WHY: If loader returned None/garbage, treat as "no previous codes" so helpers stay safe.
+    if not isinstance(previous_codes, list):
+        previous_codes = []
     newcodecount = 0
     for code_tables in website_code_tables:
         for code_table in code_tables:
@@ -306,19 +319,20 @@ def generateAutoshiftJSON(website_code_tables, previous_codes, include_expired):
                 archived = getPreviousCodeArchived(
                     code, code_table.get("game"), previous_codes
                 )
-                # Preserve previously-detected expired state when the new scraped row lacks a real expiry.
-                prev_entry = getPreviousCodeEntry(
-                    code, code_table.get("game"), previous_codes
-                )
-                # If previous entry explicitly marked expired, and new row has unknown/empty expires,
-                # keep expired=True instead of reverting to False.
+                
+                # WHY: Preserve 'expired' from a previous run when the newly scraped row
+                # doesn't have a real expiry (e.g. "Unknown" or empty). This prevents
+                # flipping an already-expired code back to active just because the source
+                # now shows no explicit expiry.
+                prev_entry = getPreviousCodeEntry(code, code_table.get("game"), previous_codes)
                 if prev_entry and prev_entry.get("expired"):
                     new_expires = (code.get("expires") or "").strip()
-                    if new_expires.lower() in ["", "unknown", "unknown"]:
+                    if new_expires.lower() in ("", "unknown"):
                         code["expired"] = True
                 # end preserve logic
-
-                if archived == None:
+                
+                # WHY: Prefer identity check 'is None' with the singleton None (PEP 8) and avoid truthiness pitfalls.
+                if archived is None:
                     # New code
                     archived = code_table.get("archived")
                     newcodecount += 1
