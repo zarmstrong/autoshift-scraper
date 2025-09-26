@@ -134,3 +134,7 @@ notebooks/
 data
 *new.json
 *old.json
+
+# Ignore data folder
+/data
+data*
