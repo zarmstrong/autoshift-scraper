@@ -10,6 +10,7 @@ from autoshift_scraper import (
     remap_dict_keys,
     cleanse_codes,
     scrape_polygon_bl4_codes,
+    scrape_xsmash_codes,
 )
 
 
@@ -59,7 +60,7 @@ def test_scrape_polygon_bl4_codes_valid(monkeypatch):
         def raise_for_status(self):
             pass
 
-    def dummy_get(url, timeout=15):
+    def dummy_get(url, timeout=15, headers=None):
         return DummyResp(html)
 
     import autoshift_scraper
@@ -88,7 +89,7 @@ def test_scrape_polygon_bl4_codes_duplicates(monkeypatch):
         def raise_for_status(self):
             pass
 
-    def dummy_get(url, timeout=15):
+    def dummy_get(url, timeout=15, headers=None):
         return DummyResp(html)
 
     import autoshift_scraper
@@ -110,7 +111,7 @@ def test_scrape_polygon_bl4_codes_missing_h2(monkeypatch):
         def raise_for_status(self):
             pass
 
-    def dummy_get(url, timeout=15):
+    def dummy_get(url, timeout=15, headers=None):
         return DummyResp(html)
 
     import autoshift_scraper
@@ -130,7 +131,7 @@ def test_scrape_polygon_bl4_codes_missing_ul(monkeypatch):
         def raise_for_status(self):
             pass
 
-    def dummy_get(url, timeout=15):
+    def dummy_get(url, timeout=15, headers=None):
         return DummyResp(html)
 
     import autoshift_scraper
@@ -138,3 +139,56 @@ def test_scrape_polygon_bl4_codes_missing_ul(monkeypatch):
     monkeypatch.setattr(autoshift_scraper.requests, "get", dummy_get)
     codes = scrape_polygon_bl4_codes(existing_codes_set=set())
     assert codes == []
+
+
+def test_scrape_xsmash_codes_reads_gold_and_skins(monkeypatch):
+        html = """
+        <script>
+        const GOLD_KEYS_DATA = [
+            {
+                code: "AAAAA-BBBBB-CCCCC-DDDDD-EEEEE",
+                expires: createDate(2030, 12, 31, 0, 0, 0, 0),
+                title: '3 Gold Keys'
+            },
+            {
+                code: "DUPPE-DUPPE-DUPPE-DUPPE-DUPPE",
+                expires: createDate(2030, 12, 31, 0, 0, 0, 0),
+                title: '1 Gold Key'
+            }
+        ];
+
+        const SKINS_DATA = [
+            {
+                code: "FFFFF-GGGGG-HHHHH-IIIII-JJJJJ",
+                expires: createDate(2030, 12, 31, 0, 0, 0, 0),
+                title: 'Vault Hunter Skin'
+            },
+            {
+                code: "DUPPE-DUPPE-DUPPE-DUPPE-DUPPE",
+                expires: createDate(2030, 12, 31, 0, 0, 0, 0),
+                title: 'Duplicate Skin Entry'
+            }
+        ];
+        </script>
+        """
+
+        class DummyResp:
+                def __init__(self, text):
+                        self.text = text
+
+                def raise_for_status(self):
+                        pass
+
+        def dummy_get(url, timeout=15, headers=None):
+                return DummyResp(html)
+
+        import autoshift_scraper
+
+        monkeypatch.setattr(autoshift_scraper.requests, "get", dummy_get)
+        codes = scrape_xsmash_codes(existing_codes_set={"DUPPE-DUPPE-DUPPE-DUPPE-DUPPE"})
+
+        assert len(codes) == 2
+        assert codes[0]["code"] == "AAAAA-BBBBB-CCCCC-DDDDD-EEEEE"
+        assert codes[0]["reward"] == "3 Gold Keys"
+        assert codes[1]["code"] == "FFFFF-GGGGG-HHHHH-IIIII-JJJJJ"
+        assert codes[1]["reward"] == "Vault Hunter Skin"
