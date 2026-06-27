@@ -134,3 +134,5 @@ notebooks/
 data
 *new.json
 *old.json
+cronjob.sh
+
