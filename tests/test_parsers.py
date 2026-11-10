@@ -10,6 +10,7 @@ from autoshift_scraper import (
     remap_dict_keys,
     cleanse_codes,
     scrape_polygon_bl4_codes,
+    scrape_ign_bl4_codes,
     scrape_xsmash_codes,
 )
 
@@ -192,3 +193,58 @@ def test_scrape_xsmash_codes_reads_gold_and_skins(monkeypatch):
         assert codes[0]["reward"] == "3 Gold Keys"
         assert codes[1]["code"] == "FFFFF-GGGGG-HHHHH-IIIII-JJJJJ"
         assert codes[1]["reward"] == "Vault Hunter Skin"
+
+
+def _ign_dummy(monkeypatch, html, status_code=200):
+    class DummyResp:
+        def __init__(self, text):
+            self.content = text.encode("utf-8")
+            self.status_code = status_code
+
+        def raise_for_status(self):
+            pass
+
+    def dummy_get(url, timeout=15, headers=None):
+        return DummyResp(html)
+
+    import autoshift_scraper
+
+    warnings = []
+    monkeypatch.setattr(autoshift_scraper.requests, "get", dummy_get)
+    monkeypatch.setattr(
+        autoshift_scraper._L, "warning", lambda msg, *a: warnings.append(msg % a)
+    )
+    return warnings
+
+
+def test_scrape_ign_bl4_codes_valid_no_warning(monkeypatch):
+    html = """
+    <table><tbody>
+      <tr><td>AAAAA-BBBBB-CCCCC-DDDDD-EEEEE (3 Golden Keys)</td></tr>
+      <tr><td><s>FFFFF-GGGGG-HHHHH-IIIII-JJJJJ (1 Golden Key)</s></td></tr>
+    </tbody></table>
+    <ul><li>KKKKK-LLLLL-MMMMM-NNNNN-OOOOO (Skin)</li></ul>
+    """
+    warnings = _ign_dummy(monkeypatch, html)
+    codes = scrape_ign_bl4_codes(existing_codes_set=set())
+
+    assert [c["code"] for c in codes] == [
+        "AAAAA-BBBBB-CCCCC-DDDDD-EEEEE",
+        "FFFFF-GGGGG-HHHHH-IIIII-JJJJJ",
+        "KKKKK-LLLLL-MMMMM-NNNNN-OOOOO",
+    ]
+    assert codes[0]["reward"] == "3 Golden Keys"
+    assert codes[1]["expired"] is True
+    assert warnings == []
+
+
+def test_scrape_ign_bl4_codes_empty_page_warns(monkeypatch):
+    html = "<html><body><div>Checking your browser...</div></body></html>"
+    warnings = _ign_dummy(monkeypatch, html, status_code=202)
+    codes = scrape_ign_bl4_codes(existing_codes_set=set())
+
+    assert codes == []
+    assert len(warnings) == 1
+    assert "no tables or lists" in warnings[0]
+    assert "HTTP 202" in warnings[0]
+    assert f"{len(html)} bytes" in warnings[0]

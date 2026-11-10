@@ -740,6 +740,15 @@ def scrape_ign_bl4_codes(existing_codes_set):
             duplicates_existing,
             duplicates_inpage,
         )
+        if parsed_total == 0:
+            # No tables or lists at all usually means IGN served a bot-check or
+            # stripped page rather than the wiki, so make it visible in the logs.
+            _L.warning(
+                "IGN BL4: Page had no tables or lists to parse; IGN may have served a "
+                "blocked or empty page (HTTP %s, %d bytes)",
+                getattr(r, "status_code", "unknown"),
+                len(r.content or b""),
+            )
         return codes
     except Exception as e:
         _L.error(f"IGN BL4: Error scraping codes: {e}")
