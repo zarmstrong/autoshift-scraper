@@ -417,6 +417,42 @@ def generateAutoshiftJSON(website_code_tables, previous_codes, include_expired):
     # return json.dumps(autoshiftcodes,indent=2, default=str)
 
 
+# Append previously published entries that this run did not scrape, so a source
+# that is temporarily down or empty can't drop codes from the published file.
+# Call this once, after all scrapers have run: carried-forward codes must not be
+# in the scrapers' existing_codes_set, or a source couldn't update them.
+def carry_forward_previous_codes(autoshift, previous_codes, include_expired):
+    if not previous_codes or not isinstance(previous_codes, list):
+        return 0
+    previous_entries = previous_codes[0].get("codes") or []
+
+    code_pattern = re.compile(r"^[A-Z0-9]{5}(?:-[A-Z0-9]{5}){4}$")
+    seen = {
+        (
+            (entry.get("code") or "").upper(),
+            entry.get("game"),
+            entry.get("platform"),
+        )
+        for entry in autoshift[0]["codes"]
+    }
+
+    carried = 0
+    for entry in previous_entries:
+        raw_code = (entry.get("code") or "").strip().upper()
+        # Keep validation strict: never carry an invalid code into the output.
+        if not code_pattern.fullmatch(raw_code):
+            continue
+        if not include_expired and entry.get("expired"):
+            continue
+        key = (raw_code, entry.get("game"), entry.get("platform"))
+        if key in seen:
+            continue
+        seen.add(key)
+        autoshift[0]["codes"].append(dict(entry, code=raw_code))
+        carried += 1
+    return carried
+
+
 def run_migrations_on_shiftfile(shiftfile_path, previous_codes):
     """Run migrations against the loaded shiftcodes structure.
 
@@ -1045,6 +1081,17 @@ def main(args):
         # Re-generate the output JSONs with the new codes included
         codes_inc_expired = generateAutoshiftJSON(code_tables, previous_codes, True)
         codes_excl_expired = generateAutoshiftJSON(code_tables, previous_codes, False)
+
+    # Keep previously published codes that no source returned this run
+    carried_count = carry_forward_previous_codes(
+        codes_inc_expired, previous_codes, True
+    )
+    carry_forward_previous_codes(codes_excl_expired, previous_codes, False)
+    if carried_count:
+        _L.info(
+            "Carried forward %d previously published codes not seen this run",
+            carried_count,
+        )
 
     _L.info("Scraping Complete. Now writing out shiftcodes.json file")
 
