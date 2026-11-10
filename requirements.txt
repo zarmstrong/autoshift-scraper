@@ -1,7 +1,7 @@
 APScheduler==3.10.4
 beautifulsoup4==4.12.2
 bs4==0.0.1
-certifi==2023.7.22
+certifi==2026.10.18
 cffi==1.16.0
 charset-normalizer==3.2.0
 cryptography==41.0.4
