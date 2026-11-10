@@ -12,6 +12,7 @@ from autoshift_scraper import (
     scrape_polygon_bl4_codes,
     scrape_ign_bl4_codes,
     scrape_xsmash_codes,
+    carry_forward_previous_codes,
 )
 
 
@@ -248,3 +249,128 @@ def test_scrape_ign_bl4_codes_empty_page_warns(monkeypatch):
     assert "no tables or lists" in warnings[0]
     assert "HTTP 202" in warnings[0]
     assert f"{len(html)} bytes" in warnings[0]
+
+
+def _prev_entry(code, game="Borderlands 4", platform="universal", expired=False):
+    return {
+        "code": code,
+        "type": "shift",
+        "game": game,
+        "platform": platform,
+        "reward": "1 Golden Key",
+        "archived": "2026-01-01 00:00:00+00:00",
+        "expires": "Unknown",
+        "expired": expired,
+        "link": "https://example.invalid/",
+    }
+
+
+def test_carry_forward_keeps_unseen_previous_codes():
+    scraped = _prev_entry("AAAAA-BBBBB-CCCCC-DDDDD-EEEEE")
+    autoshift = [{"meta": {"newcodecount": 0}, "codes": [dict(scraped)]}]
+    previous = [
+        {
+            "meta": {"version": "2"},
+            "codes": [
+                dict(scraped, reward="stale reward"),  # seen this run: not duplicated
+                _prev_entry("FFFFF-GGGGG-HHHHH-IIIII-JJJJJ"),  # unseen: carried
+                _prev_entry("FFFFF-GGGGG-HHHHH-IIIII-JJJJJ", platform="steam"),
+                _prev_entry("KKKKK-LLLLL-MMMMM-NNNNN-OOOOO", expired=True),
+                _prev_entry("not-a-valid-code"),  # invalid: never carried
+            ],
+        }
+    ]
+
+    carried = carry_forward_previous_codes(autoshift, previous, include_expired=True)
+
+    keys = [(c["code"], c["platform"]) for c in autoshift[0]["codes"]]
+    assert carried == 3
+    assert keys == [
+        ("AAAAA-BBBBB-CCCCC-DDDDD-EEEEE", "universal"),
+        ("FFFFF-GGGGG-HHHHH-IIIII-JJJJJ", "universal"),
+        ("FFFFF-GGGGG-HHHHH-IIIII-JJJJJ", "steam"),
+        ("KKKKK-LLLLL-MMMMM-NNNNN-OOOOO", "universal"),
+    ]
+    # the freshly scraped entry wins over the previous one
+    assert autoshift[0]["codes"][0]["reward"] == "1 Golden Key"
+    # carrying forward never counts as a new code
+    assert autoshift[0]["meta"]["newcodecount"] == 0
+
+
+def test_carry_forward_skips_expired_when_excluded():
+    autoshift = [{"meta": {}, "codes": []}]
+    previous = [
+        {
+            "meta": {"version": "2"},
+            "codes": [
+                _prev_entry("AAAAA-BBBBB-CCCCC-DDDDD-EEEEE"),
+                _prev_entry("KKKKK-LLLLL-MMMMM-NNNNN-OOOOO", expired=True),
+            ],
+        }
+    ]
+    carried = carry_forward_previous_codes(autoshift, previous, include_expired=False)
+    assert carried == 1
+    assert [c["code"] for c in autoshift[0]["codes"]] == [
+        "AAAAA-BBBBB-CCCCC-DDDDD-EEEEE"
+    ]
+
+
+@pytest.mark.parametrize("previous", [None, [], [{"meta": {}}]])
+def test_carry_forward_handles_missing_previous_file(previous):
+    autoshift = [{"meta": {}, "codes": []}]
+    assert carry_forward_previous_codes(autoshift, previous, True) == 0
+    assert autoshift[0]["codes"] == []
+
+
+def test_main_keeps_codes_when_a_source_returns_nothing(monkeypatch, tmp_path):
+    """IGN returning an empty page must not drop the codes only IGN listed."""
+    import json
+    import types
+    import autoshift_scraper
+
+    seen_code = "AAAAA-BBBBB-CCCCC-DDDDD-EEEEE"
+    ign_only_code = "FFFFF-GGGGG-HHHHH-IIIII-JJJJJ"
+    previous = [
+        {
+            "meta": {"version": "2"},
+            "codes": [_prev_entry(seen_code), _prev_entry(ign_only_code)],
+        }
+    ]
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "shiftcodes.json").write_text(json.dumps(previous))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(autoshift_scraper, "DIRNAME", str(tmp_path))
+
+    def fake_scrape_codes(webpage):
+        if webpage.get("game") != "Borderlands 4":
+            return []
+        return [
+            {
+                "game": "Borderlands 4",
+                "platform": "universal",
+                "sourceURL": "https://example.invalid/",
+                "archived": "2026-11-10 00:00:00+00:00",
+                "raw_table_html": "",
+                "codes": [
+                    {
+                        "code": seen_code,
+                        "reward": "1 Golden Key",
+                        "expires": "Unknown",
+                        "expired": False,
+                    }
+                ],
+            }
+        ]
+
+    monkeypatch.setattr(autoshift_scraper, "scrape_codes", fake_scrape_codes)
+    monkeypatch.setattr(autoshift_scraper, "scrape_polygon_bl4_codes", lambda s: [])
+    monkeypatch.setattr(autoshift_scraper, "scrape_ign_bl4_codes", lambda s: [])
+    monkeypatch.setattr(autoshift_scraper, "scrape_xsmash_codes", lambda s: [])
+
+    autoshift_scraper.main(types.SimpleNamespace(user=None, repo=None, token=None))
+
+    out = json.loads((tmp_path / "data" / "shiftcodes.json").read_text())
+    by_code = {c["code"]: c for c in out[0]["codes"]}
+    assert set(by_code) == {seen_code, ign_only_code}
+    assert by_code[ign_only_code]["archived"] == "2026-01-01 00:00:00+00:00"
+    assert out[0]["meta"]["newcodecount"] == 0

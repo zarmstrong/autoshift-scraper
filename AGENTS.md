@@ -13,7 +13,8 @@ This project scrapes SHiFT codes (Borderlands series, Tiny Tina's Wonderlands) f
   - `scrape_codes()`: the generic scraper for mentalmars tables.
   - `scrape_polygon_bl4_codes()`, `scrape_ign_bl4_codes()`, `scrape_xsmash_codes()`: site-specific BL4 scrapers. Each takes `existing_codes_set` to de-duplicate.
   - `cleanse_codes()` / `remap_dict_keys()`: normalise scraped rows into `code` / `reward` / `expires` / `expired`.
-  - `generateAutoshiftJSON()`: builds the output file and keeps archived and previous entries.
+  - `generateAutoshiftJSON()`: builds the output from this run's scraped codes, keeping each code's previous `archived` date and `expired` flag.
+  - `carry_forward_previous_codes()`: called once after all scrapers; appends previously published entries that no source returned this run, so a source outage can't drop codes from the published file.
   - `run_migrations_on_shiftfile()`: upgrades the file format. The current `meta.version` is `"2"`. If you change the output schema, bump the version and add a migration here. Note that versions are compared as strings.
   - `main()` / `setup_argparser()`: CLI flags (`--user`, `--repo`, `--token`, `--schedule`, `--verbose`, ...).
 - `mark_expired.py`: a manual tool that forces specific codes to expired in `data/shiftcodes.json` and can optionally push the file.
