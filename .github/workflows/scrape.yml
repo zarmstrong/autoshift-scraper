@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Ensure data/shiftcodes.json is present for scraper
         run: |
@@ -42,13 +42,13 @@ jobs:
           fi
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
       # Cache pip download/wheel cache to speed installs between runs
       - name: Cache pip
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ./.pip-cache
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-py-3.12
