@@ -5,7 +5,7 @@ certifi==2026.10.18
 cffi==1.16.0
 charset-normalizer==3.2.0
 cryptography==41.0.4
-Deprecated==1.2.14
+Deprecated==3.0.1
 html5lib==1.1
 idna==3.4
 pycparser==2.21
@@ -22,4 +22,4 @@ tzdata==2023.3
 tzlocal==5.0.1
 urllib3==2.0.5
 webencodings==0.5.1
-wrapt==1.15.0
+wrapt==2.5.2
