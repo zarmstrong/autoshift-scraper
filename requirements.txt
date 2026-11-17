@@ -16,7 +16,7 @@ python-dateutil==4.0.0
 pytz==2026.6
 requests==2.33.0
 six==1.17.0
-soupsieve==2.9.0
+soupsieve==4.1.1
 typing_extensions==4.16.0
 tzdata==2026.6
 tzlocal==5.4.5
