@@ -4,7 +4,7 @@ bs4==0.0.2
 certifi==2026.10.18
 cffi==2.1.1
 charset-normalizer==3.5.2
-cryptography==49.0.0
+cryptography==50.0.2
 Deprecated==3.0.1
 html5lib==1.1
 idna==3.15
